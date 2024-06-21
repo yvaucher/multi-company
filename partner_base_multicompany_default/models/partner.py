@@ -162,7 +162,10 @@ class Partner(models.Model):
         res = super().write(vals)
         # Allow opt-in for progagation on write using context
         # Useful for data import to update records
-        if self.env.context.get("force_property_propagation") and not "property_propagation" in self.env.context:
+        if (
+            self.env.context.get("force_property_propagation")
+            and not "property_propagation" in self.env.context
+        ):
             multicompany_partners = self - self.filtered("company_id")
             # avoid infinite loop
             ctx = {"property_propagation": "ongoing"}

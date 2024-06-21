@@ -1,4 +1,5 @@
 # Copyright 2023 Moduon Team S.L.
+# Copyright 2024 Camptocamp SA
 # License LGPL-3.0 or later (https://www.gnu.org/licenses/lgpl-3.0)
 import logging
 from collections import defaultdict
@@ -12,22 +13,17 @@ from odoo.exceptions import UserError
 _logger = logging.getLogger(__name__)
 
 
-class ProductTemplate(models.Model):
-    _inherit = "product.template"
+class ProductCategory(models.Model):
+    _inherit = "product.category"
 
     def _propagate_multicompany_account(self, field):
         """Set the same account for all companies.
 
         Args:
             field (str):
-                The field to propagate. E.g. "property_account_income_id"
-                or "property_account_expense_id".
+                The field to propagate. E.g. "property_account_income_categ_id"
+                or "property_account_expense_categ_id".
         """
-        sorted_products = (self - self.filtered("company_id")).sorted(field)
-        if self and not sorted_products:
-            raise UserError(
-                _("Only multi-company products can be propagated to other companies.")
-            )
         alien_companies = self.env.user.company_ids - self.env.company
         if not alien_companies:
             raise UserError(
@@ -47,18 +43,16 @@ class ProductTemplate(models.Model):
                 (
                     "code",
                     "in",
-                    sorted_products[field].mapped("code"),
+                    self[field].mapped("code"),
                 ),
             ]
         )
         accounts_map = defaultdict(dict)
         for account in alien_accounts:
             accounts_map[account.company_id.id][account.code] = account.id
-        # Group products by account
-        for good_account, products_grouper in groupby(
-            sorted_products, itemgetter(field)
-        ):
-            products = reduce(or_, products_grouper)
+        # Group categories by account
+        for good_account, categories_grouper in groupby(self, itemgetter(field)):
+            categories = reduce(or_, categories_grouper)
             # Propagate account to alien companies if possible
             target_code = good_account.code
             for alien_company in alien_companies:
@@ -70,40 +64,39 @@ class ProductTemplate(models.Model):
                 except KeyError:
                     _logger.warning(
                         "Not propagating account to company because it does "
-                        "not exist there: products=%s, company=%s, account=%s",
-                        products,
+                        "not exist there: product_categories=%s, company=%s, account=%s",
+                        categories,
                         alien_company,
                         target_code,
                     )
                     continue
-                products.with_company(alien_company)[field] = target_account_id
+                categories.with_company(alien_company)[field] = target_account_id
 
     def propagate_multicompany_account_income(self):
-        self._propagate_multicompany_account("property_account_income_id")
+        self._propagate_multicompany_account("property_account_income_categ_id")
 
     def propagate_multicompany_account_expense(self):
-        self._propagate_multicompany_account("property_account_expense_id")
+        self._propagate_multicompany_account("property_account_expense_categ_id")
 
     def _propagate_property_fields(self):
-        income_products = self.filtered("property_account_income_id")
-        expense_products = self.filtered("property_account_expense_id")
+        income_categories = self.filtered("property_account_income_categ_id")
+        expense_categories = self.filtered("property_account_expense_categ_id")
         # Skip if no account was selected
-        if not income_products and not expense_products:
+        if not income_categories and not expense_categories:
             return
         # Skip if user has access to only one company
         alien_user_companies = self.env.user.company_ids - self.env.company
         if not alien_user_companies:
             return
         # Propagate account to other companies by default
-        income_products.propagate_multicompany_account_income()
-        expense_products.propagate_multicompany_account_expense()
+        income_categories.propagate_multicompany_account_income()
+        expense_categories.propagate_multicompany_account_expense()
 
     @api.model_create_multi
     def create(self, vals_list):
         """Propagate accounts to other companies always, on creation."""
         res = super().create(vals_list)
-        multicompany_products = res - res.filtered("company_id")
-        multicompany_products._propagate_property_fields()
+        res._propagate_property_fields()
         return res
 
     def write(self, vals):
@@ -111,23 +104,6 @@ class ProductTemplate(models.Model):
         res = super().write(vals)
         # Allow opt-in for progagation on write using context
         # Useful for data import to update records
-        if (
-            self.env.context.get("force_property_propagation")
-            and not "property_propagation" in self.env.context
-        ):
-            multicompany_products = self - self.filtered("company_id")
-            # avoid infinite loop
-            ctx = {"property_propagation": "ongoing"}
-            multicompany_products = multicompany_products.with_context(ctx)
-            multicompany_products._propagate_property_fields()
+        if self.env.context.get("force_property_propagation"):
+            self._propagate_property_fields()
         return res
-
-
-class ProductProduct(models.Model):
-    _inherit = "product.product"
-
-    def propagate_multicompany_account_expense(self):
-        self.product_tmpl_id.propagate_multicompany_account_expense()
-
-    def propagate_multicompany_account_income(self):
-        self.product_tmpl_id.propagate_multicompany_account_income()
